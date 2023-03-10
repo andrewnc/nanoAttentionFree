@@ -1,5 +1,7 @@
 
-# nanoGPT
+# nanoGPT (AttentionFree)
+
+---- WIP ----
 
 ![nanoGPT](assets/nanogpt.jpg)
 
