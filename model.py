@@ -10,6 +10,7 @@ https://github.com/huggingface/transformers/blob/main/src/transformers/models/gp
 import math
 import inspect
 from dataclasses import dataclass
+from standalone_hyena import HyenaOperator, PositionalEmbedding, ExponentialModulation
 
 import torch
 import torch.nn as nn
@@ -112,6 +113,24 @@ class Block(nn.Module):
         x = x + self.mlp(self.ln_2(x))
         return x
 
+class HyenaBlock(nn.Module):
+
+    def __init__(self, config):
+        super().__init__()
+        self.ln1 = LayerNorm(config.n_embd, bias=config.bias)
+        self.attn_free = HyenaOperator(
+            d_model=config.n_embd,
+            l_max=config.block_size,
+            order=2,
+            filter_order=64)
+        self.ln2 = LayerNorm(config.n_embd, bias=config.bias)
+        self.mlp = MLP(config)
+
+    def forward(self, x):
+        x = x + self.attn_free(self.ln1(x))
+        x = x + self.mlp(self.ln2(x))
+        return x
+
 @dataclass
 class GPTConfig:
     block_size: int = 1024
@@ -134,7 +153,7 @@ class GPT(nn.Module):
             wte = nn.Embedding(config.vocab_size, config.n_embd),
             wpe = nn.Embedding(config.block_size, config.n_embd),
             drop = nn.Dropout(config.dropout),
-            h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+            h = nn.ModuleList([HyenaBlock(config) for _ in range(config.n_layer)]),
             ln_f = LayerNorm(config.n_embd, bias=config.bias),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
@@ -277,11 +296,12 @@ class GPT(nn.Module):
         # separate out all parameters to those that will and won't experience regularizing weight decay
         decay = set()
         no_decay = set()
-        whitelist_weight_modules = (torch.nn.Linear, )
-        blacklist_weight_modules = (torch.nn.LayerNorm, LayerNorm, torch.nn.Embedding)
+        whitelist_weight_modules = ()
+        blacklist_weight_modules = (torch.nn.Linear, torch.nn.LayerNorm, LayerNorm, torch.nn.Embedding, PositionalEmbedding, ExponentialModulation)
         for mn, m in self.named_modules():
             for pn, p in m.named_parameters():
                 fpn = '%s.%s' % (mn, pn) if mn else pn # full param name
+
                 # random note: because named_modules and named_parameters are recursive
                 # we will see the same tensors p many many times. but doing it this way
                 # allows us to know which parent module any tensor p belongs to...
@@ -294,6 +314,8 @@ class GPT(nn.Module):
                 elif pn.endswith('weight') and isinstance(m, blacklist_weight_modules):
                     # weights of blacklist modules will NOT be weight decayed
                     no_decay.add(fpn)
+                else:
+                    no_decay.add(fpn)
 
         # subtle: 'transformer.wte.weight' and 'lm_head.weight' are tied, so they
         # will appear in the no_decay and decay sets respectively after the above.
@@ -301,7 +323,10 @@ class GPT(nn.Module):
         # will only return the first occurence, key'd by 'transformer.wte.weight', below.
         # so let's manually remove 'lm_head.weight' from decay set. This will include
         # this tensor into optimization via transformer.wte.weight only, and not decayed.
-        decay.remove('lm_head.weight')
+        if 'lm_head.weight' in decay:
+            decay.remove('lm_head.weight')
+        else:
+            no_decay.remove('lm_head.weight')
 
         # validate that we considered every parameter
         param_dict = {pn: p for pn, p in self.named_parameters()}
