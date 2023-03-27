@@ -15,7 +15,8 @@ wandb_run_name = 'mini-gpt'
 
 dataset = 'shakespeare_char'
 batch_size = 64
-block_size = 256 # context of up to 256 previous characters
+# block_size = 256 # context of up to 256 previous characters
+block_size = 1024 # context of up to 256 previous characters
 
 # baby GPT model :)
 n_layer = 6
